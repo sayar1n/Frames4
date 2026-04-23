@@ -1,7 +1,7 @@
 {
   "name": "frames4",
   "version": "1.0.0",
-  "description": ".\r ├── index.js                 # точка входа, запуск сервера\r ├── config.js                # конфигурация (порты, пороги)\r ├── domain/\r │   ├── stateMachine.js      # состояния и допустимые переходы\r │   └── compensation.js      # логика компенсации (отмена брони)\r ├── storage/\r │   ├── processStore.js      # хранение состояний процессов\r │   ├── idempotencyStore.js  # хранение обработанных идемпотентных ключей\r │   └── lockStore.js         # блокировки для упорядочивания по процессу\r ├── processing/\r │   └── eventProcessor.js    # основная логика обработки события (идемпотентность, переходы, сбои, метрики)\r ├── observability/\r │   ├── logger.js            # логгер со сквозным correlationId\r │   └── metrics.js           # счётчики и гистограммы задержек\r ├── routes/\r │   ├── event.js             # POST /api/event\r │   ├── state.js             # GET /api/state/:processId\r │   ├── health.js            # /health/live, /health/ready\r │   ├── metrics.js           # GET /metrics\r │   └── admin.js             # POST /admin/reset (для тестов)\r └── utils/\r     ├── delay.js             # имитация задержки шага\r     └── correlation.js       # генерация UUID для correlationId",
+  "description": "",
   "main": "index.js",
   "scripts": {
     "test": "jest"

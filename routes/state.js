@@ -1,3 +1,6 @@
+// GET /api/state/:processId — текущее состояние процесса (или «Новый», если записи нет).
+// correlationId можно передать в query или получить сгенерированный в ответе.
+ 
 const express = require('express');
 const { getState } = require('../storage/processStore');
 const { STATES } = require('../domain/stateMachine');

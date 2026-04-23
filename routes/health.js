@@ -1,3 +1,6 @@
+ // GET /health/live (процесс жив) и /health/ready (готовность к трафику).
+ // Ready становится 503, если число компенсаций превысило COMPENSATION_THRESHOLD из config.
+ 
 const express = require('express');
 const { metrics } = require('../observability/metrics');
 const config = require('../config');

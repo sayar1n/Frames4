@@ -1,3 +1,6 @@
+// Доменная модель: состояния процесса (русские строки в API ответов) и переходы по событиям.
+// События в API — английские идентификаторы (удобно для curl/JSON без проблем кодировки).
+
 const STATES = {
   NEW: 'Новый',
   REQUEST_ACCEPTED: 'ЗаявкаПринята',
@@ -7,12 +10,19 @@ const STATES = {
   COMPENSATED: 'КомпенсацияВыполнена'
 };
 
-// Допустимые переходы (без компенсации – компенсация обрабатывается отдельно)
-const transitions = {
-  [STATES.NEW]: { 'ПринятьЗаявку': STATES.REQUEST_ACCEPTED },
-  [STATES.REQUEST_ACCEPTED]: { 'Забронировать': STATES.RESOURCE_BOOKED },
-  [STATES.RESOURCE_BOOKED]: { 'ВыдатьДоступ': STATES.ACCESS_GRANTED },
-  [STATES.ACCESS_GRANTED]: { 'Завершить': STATES.COMPLETED }
+// Имена событий в POST /api/event. 
+const EVENTS = {
+  ACCEPT_REQUEST: 'accept_request',
+  BOOK: 'book',
+  GRANT_ACCESS: 'grant_access',
+  COMPLETE: 'complete'
 };
 
-module.exports = { STATES, transitions };
+const transitions = {
+  [STATES.NEW]: { [EVENTS.ACCEPT_REQUEST]: STATES.REQUEST_ACCEPTED },
+  [STATES.REQUEST_ACCEPTED]: { [EVENTS.BOOK]: STATES.RESOURCE_BOOKED },
+  [STATES.RESOURCE_BOOKED]: { [EVENTS.GRANT_ACCESS]: STATES.ACCESS_GRANTED },
+  [STATES.ACCESS_GRANTED]: { [EVENTS.COMPLETE]: STATES.COMPLETED }
+};
+
+module.exports = { STATES, transitions, EVENTS };

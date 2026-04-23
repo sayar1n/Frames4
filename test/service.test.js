@@ -1,3 +1,7 @@
+// Интеграционные тесты HTTP API (supertest): сценарии переходов, идемпотентность,
+// компенсация, readiness при деградации, метрики, неверные переходы.
+// beforeEach сбрасывает метрики и оба in-memory store.
+
 const { resetMetrics } = require('../observability/metrics');
 const { clearProcessStore } = require('../storage/processStore');
 const { clearIdempotencyStore } = require('../storage/idempotencyStore');
@@ -15,31 +19,29 @@ describe('Машина состояний бронирования', () => {
   const idempotencyKey = 'evt-1';
   const correlationId = 'test-corr-123';
 
-  test('1. Новый процесс -> ПринятьЗаявку -> ЗаявкаПринята', async () => {
+  test('1. Новый процесс -> accept_request -> ЗаявкаПринята', async () => {
     const res = await request(app)
       .post('/api/event')
-      .send({ processId, eventType: 'ПринятьЗаявку', idempotencyKey, correlationId });
+      .send({ processId, eventType: 'accept_request', idempotencyKey, correlationId });
     expect(res.status).toBe(200);
     expect(res.body.state).toBe('ЗаявкаПринята');
     expect(res.body.processed).toBe(true);
   });
 
   test('2. Идемпотентность: повторное событие не меняет состояние', async () => {
-    // Первый раз
     await request(app)
       .post('/api/event')
-      .send({ processId, eventType: 'ПринятьЗаявку', idempotencyKey, correlationId });
-    // Второй раз с тем же ключом
+      .send({ processId, eventType: 'accept_request', idempotencyKey, correlationId });
     const res2 = await request(app)
       .post('/api/event')
-      .send({ processId, eventType: 'ПринятьЗаявку', idempotencyKey, correlationId });
+      .send({ processId, eventType: 'accept_request', idempotencyKey, correlationId });
     expect(res2.status).toBe(200);
     expect(res2.body.duplicate).toBe(true);
-    expect(res2.body.state).toBe('ЗаявкаПринята'); // состояние не изменилось
+    expect(res2.body.state).toBe('ЗаявкаПринята');
   });
 
-  test('3. Нормальный поток: ПринятьЗаявку -> Забронировать -> ВыдатьДоступ -> Завершить', async () => {
-    const steps = ['ПринятьЗаявку', 'Забронировать', 'ВыдатьДоступ', 'Завершить'];
+  test('3. Нормальный поток: accept_request -> book -> grant_access -> complete', async () => {
+    const steps = ['accept_request', 'book', 'grant_access', 'complete'];
     let currentState = '';
     for (const step of steps) {
       const res = await request(app)
@@ -51,39 +53,35 @@ describe('Машина состояний бронирования', () => {
     expect(currentState).toBe('Завершён');
   });
 
-  test('4. Сбой на шаге "ВыдатьДоступ" -> компенсация и состояние "КомпенсацияВыполнена"', async () => {
-    // Подготовка: доходим до состояния "РесурсЗабронирован"
+  test('4. Сбой на grant_access -> компенсация и КомпенсацияВыполнена', async () => {
     await request(app)
       .post('/api/event')
-      .send({ processId, eventType: 'ПринятьЗаявку', idempotencyKey: 'k1', correlationId });
+      .send({ processId, eventType: 'accept_request', idempotencyKey: 'k1', correlationId });
     await request(app)
       .post('/api/event')
-      .send({ processId, eventType: 'Забронировать', idempotencyKey: 'k2', correlationId });
+      .send({ processId, eventType: 'book', idempotencyKey: 'k2', correlationId });
 
-    // Шаг с симуляцией сбоя
     const res = await request(app)
       .post('/api/event')
-      .send({ processId, eventType: 'ВыдатьДоступ', idempotencyKey: 'k3', correlationId, simulateFailure: true });
+      .send({ processId, eventType: 'grant_access', idempotencyKey: 'k3', correlationId, simulateFailure: true });
     expect(res.status).toBe(200);
     expect(res.body.state).toBe('КомпенсацияВыполнена');
     expect(res.body.compensationExecuted).toBe(true);
   });
 
   test('5. Компенсация увеличивает счётчик метрик и может вызвать деградацию', async () => {
-    // Три компенсации подряд
     for (let i = 0; i < 4; i++) {
       const procId = `proc-deg-${i}`;
       await request(app)
         .post('/api/event')
-        .send({ processId: procId, eventType: 'ПринятьЗаявку', idempotencyKey: `a${i}`, correlationId });
+        .send({ processId: procId, eventType: 'accept_request', idempotencyKey: `a${i}`, correlationId });
       await request(app)
         .post('/api/event')
-        .send({ processId: procId, eventType: 'Забронировать', idempotencyKey: `b${i}`, correlationId });
+        .send({ processId: procId, eventType: 'book', idempotencyKey: `b${i}`, correlationId });
       await request(app)
         .post('/api/event')
-        .send({ processId: procId, eventType: 'ВыдатьДоступ', idempotencyKey: `c${i}`, correlationId, simulateFailure: true });
+        .send({ processId: procId, eventType: 'grant_access', idempotencyKey: `c${i}`, correlationId, simulateFailure: true });
     }
-    // Проверка readiness (должен быть 503, т.к. компенсаций > 3)
     const readyRes = await request(app).get('/health/ready');
     expect(readyRes.status).toBe(503);
     expect(readyRes.body.reason).toBe('critical_degradation');
@@ -96,29 +94,35 @@ describe('Машина состояний бронирования', () => {
   });
 
   test('7. Метрики показывают счётчики и среднюю задержку', async () => {
-  // Отправляем события для двух разных процессов, чтобы оба успешно обработались
-  for (let i = 0; i < 2; i++) {
-    await request(app)
-      .post('/api/event')
-      .send({ 
-        processId: `metric-proc-${i}`,  // разные processId
-        eventType: 'ПринятьЗаявку', 
-        idempotencyKey: `m${i}`, 
-        correlationId 
-      });
-  }
-  const metricsRes = await request(app).get('/metrics');
-  expect(metricsRes.status).toBe(200);
-  expect(metricsRes.body.counters.successfulTransitions).toBeGreaterThanOrEqual(2);
-  expect(metricsRes.body.averageStepLatencyMs['ПринятьЗаявку']).toBeDefined();
-});
+    for (let i = 0; i < 2; i++) {
+      await request(app)
+        .post('/api/event')
+        .send({
+          processId: `metric-proc-${i}`,
+          eventType: 'accept_request',
+          idempotencyKey: `m${i}`,
+          correlationId
+        });
+    }
+    const metricsRes = await request(app).get('/metrics');
+    expect(metricsRes.status).toBe(200);
+    expect(metricsRes.body.counters.successfulTransitions).toBeGreaterThanOrEqual(2);
+    expect(metricsRes.body.averageStepLatencyMs.accept_request).toBeDefined();
+  });
 
   test('8. Неверный переход возвращает ошибку', async () => {
-    // Попытка вызвать "Завершить" из состояния "Новый"
     const res = await request(app)
       .post('/api/event')
-      .send({ processId: 'bad', eventType: 'Завершить', idempotencyKey: 'bad', correlationId });
+      .send({ processId: 'bad', eventType: 'complete', idempotencyKey: 'bad', correlationId });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe(true);
+  });
+
+  test('9. Русские имена событий (UTF-8) по-прежнему принимаются', async () => {
+    const res = await request(app)
+      .post('/api/event')
+      .send({ processId: 'ru-proc', eventType: 'ПринятьЗаявку', idempotencyKey: 'ru-1', correlationId });
+    expect(res.status).toBe(200);
+    expect(res.body.state).toBe('ЗаявкаПринята');
   });
 });

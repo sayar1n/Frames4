@@ -1,4 +1,4 @@
-const { STATES, transitions } = require('../domain/stateMachine');
+const { STATES, transitions, EVENTS } = require('../domain/stateMachine');
 const { executeCompensation } = require('../domain/compensation');
 const { getState, setState, has } = require('../storage/processStore');
 const { isProcessed, markProcessed } = require('../storage/idempotencyStore');
@@ -6,8 +6,11 @@ const { log } = require('../observability/logger');
 const { metrics, recordLatency } = require('../observability/metrics');
 const { simulateStepDelay } = require('../utils/delay');
 
+// Ядро обработки события: идемпотентность, валидация перехода, задержка шага, метрики,
+// нормальный переход по state machine или ветка сбоя grant_access с компенсацией.
+
 async function processEvent(processId, eventType, idempotencyKey, correlationId, simulateFailure = false) {
-  // 1. Идемпотентность
+  // 1. Идемпотентность(проверка на дубликат)
   if (isProcessed(processId, idempotencyKey)) {
     metrics.retryDeliveries++;
     const currentState = getState(processId) || STATES.NEW;
@@ -23,9 +26,10 @@ async function processEvent(processId, eventType, idempotencyKey, correlationId,
     log('info', 'Initialized new process', correlationId, { processId });
   }
 
-  // 3. Проверка перехода (обычного или сбойного для ВыдатьДоступ)
+  // 3. Проверка перехода (обычного или сбойного для grant_access)
   const allowedNext = transitions[currentState]?.[eventType];
-  const isGrantWithFailure = (eventType === 'ВыдатьДоступ' && currentState === STATES.RESOURCE_BOOKED && simulateFailure);
+  const isGrantWithFailure =
+    eventType === EVENTS.GRANT_ACCESS && currentState === STATES.RESOURCE_BOOKED && simulateFailure;
 
   if (!allowedNext && !isGrantWithFailure) {
     metrics.errorTransitions++;
@@ -38,23 +42,20 @@ async function processEvent(processId, eventType, idempotencyKey, correlationId,
   let compensationDone = false;
 
   try {
-    const stepDelay = await simulateStepDelay();
+    await simulateStepDelay();
     const latencyMs = Date.now() - start;
     recordLatency(eventType, latencyMs);
 
     if (isGrantWithFailure) {
-      // Сбой на шаге ВыдатьДоступ -> компенсация
-      log('error', 'Step failed: ВыдатьДоступ', correlationId, { processId, simulateFailure });
+      log('error', 'Step failed: grant_access', correlationId, { processId, simulateFailure });
       metrics.errorTransitions++;
       await executeCompensation(processId, correlationId);
       compensationDone = true;
       newState = STATES.COMPENSATED;
       setState(processId, newState);
       log('info', 'Transition with compensation', correlationId, { from: currentState, to: newState });
-      metrics.successfulTransitions++; // Считаем обработку с компенсацией успешной (система восстановлена)
-    } 
-    else {
-      // Нормальный переход
+      metrics.successfulTransitions++;
+    } else {
       newState = allowedNext;
       setState(processId, newState);
       metrics.successfulTransitions++;

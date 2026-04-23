@@ -1,3 +1,6 @@
+// Точка входа приложения: собирает Express-приложение, подключает JSON и маршруты API.
+// При прямом запуске (node index.js) поднимает HTTP-сервер на порту из config.
+ 
 const express = require('express');
 const config = require('./config');
 

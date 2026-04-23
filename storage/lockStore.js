@@ -1,5 +1,8 @@
+// Упорядочивание параллельных запросов к одному процессу.
+ 
 const processLocks = new Map();
 
+ 
 async function runWithLock(processId, fn) {
   let resolveLock;
   const lockPromise = new Promise((resolve) => { resolveLock = resolve; });

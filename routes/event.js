@@ -1,17 +1,21 @@
+// POST /api/event — приём события машины состояний.
+// Валидирует тело, нормализует eventType , lock по processId.
+
 const express = require('express');
 const { processEvent } = require('../processing/eventProcessor');
 const { runWithLock } = require('../storage/lockStore');
 const { generateCorrelationId } = require('../utils/correlation');
+const { resolveEventType, allowedEventTypesMessage } = require('../utils/eventType');
 const router = express.Router();
 
 router.post('/api/event', async (req, res) => {
-  const { processId, eventType, idempotencyKey, correlationId: providedCorr, simulateFailure = false } = req.body;
-  if (!processId || !eventType || !idempotencyKey) {
+  const { processId, eventType: rawEventType, idempotencyKey, correlationId: providedCorr, simulateFailure = false } = req.body;
+  if (!processId || !rawEventType || !idempotencyKey) {
     return res.status(400).json({ error: 'Missing processId, eventType or idempotencyKey' });
   }
-  const allowed = ['ПринятьЗаявку', 'Забронировать', 'ВыдатьДоступ', 'Завершить'];
-  if (!allowed.includes(eventType)) {
-    return res.status(400).json({ error: `Invalid eventType. Allowed: ${allowed.join(', ')}` });
+  const eventType = resolveEventType(rawEventType);
+  if (!eventType) {
+    return res.status(400).json({ error: `Invalid eventType. ${allowedEventTypesMessage()}` });
   }
   const correlationId = providedCorr || generateCorrelationId();
 

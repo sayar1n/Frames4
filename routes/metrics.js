@@ -1,3 +1,6 @@
+// GET /metrics — агрегированные счётчики переходов, ретраев, компенсаций,
+// средние задержки по шагам, размеры in-memory хранилищ процессов и идемпотентности.
+ 
 const express = require('express');
 const { metrics } = require('../observability/metrics');
 const { size } = require('../storage/idempotencyStore');

@@ -1,4 +1,3 @@
-```markdown
 # Сервис бронирования переговорок (State Machine with Compensation)
 
 Учебная веб-служба, реализующая процесс бронирования переговорной комнаты в 4 шага с поддержкой идемпотентности, компенсации при сбоях и полной наблюдаемостью (логи, метрики, health checks).
@@ -33,12 +32,16 @@ npx nodemon index.js
 
 ### Допустимые переходы (без сбоев)
 
-- `Новый` → `ПринятьЗаявку` → `ЗаявкаПринята`
-- `ЗаявкаПринята` → `Забронировать` → `РесурсЗабронирован`
-- `РесурсЗабронирован` → `ВыдатьДоступ` → `ДоступВыдан`
-- `ДоступВыдан` → `Завершить` → `Завершён`
+События в API — **английские** идентификаторы (удобно для `curl` и JSON):
 
-> При сбое на шаге `ВыдатьДоступ` (если передан флаг `simulateFailure: true`) выполняется **компенсация** (отмена брони), и процесс переходит в `КомпенсацияВыполнена`.
+- `Новый` → **`accept_request`** → `ЗаявкаПринята`
+- `ЗаявкаПринята` → **`book`** → `РесурсЗабронирован`
+- `РесурсЗабронирован` → **`grant_access`** → `ДоступВыдан`
+- `ДоступВыдан` → **`complete`** → `Завершён`
+
+Регистр у событий не важен (`Grant_Access` и т.п.). Дополнительно принимаются **устаревшие русские** имена при корректной UTF-8 передаче (например из Postman).
+
+> При сбое на шаге **`grant_access`** (если передан флаг `simulateFailure: true`) выполняется **компенсация** (отмена брони), и процесс переходит в `КомпенсацияВыполнена`.
 
 ## Идемпотентность
 
@@ -55,10 +58,10 @@ Content-Type: application/json
 ```json
 {
   "processId": "string (обязательно)",
-  "eventType": "ПринятьЗаявку | Забронировать | ВыдатьДоступ | Завершить",
+  "eventType": "accept_request | book | grant_access | complete",
   "idempotencyKey": "string (обязательно)",
   "correlationId": "string (опционально, генерируется если нет)",
-  "simulateFailure": "boolean (опционально, только для eventType=ВыдатьДоступ)"
+  "simulateFailure": "boolean (опционально, только для eventType=grant_access)"
 }
 ```
 **Ответ (200 OK):**
@@ -105,10 +108,10 @@ GET /metrics
     "compensationCounter": 3
   },
   "averageStepLatencyMs": {
-    "ПринятьЗаявку": 31.25,
-    "Забронировать": 28.70,
-    "ВыдатьДоступ": 45.33,
-    "Завершить": 22.15
+    "accept_request": 31.25,
+    "book": 28.70,
+    "grant_access": 45.33,
+    "complete": 22.15
   },
   "totalProcesses": 4,
   "totalIdempotencyKeys": 12
@@ -143,7 +146,7 @@ npm test
 - **Логирование**: каждая запись журнала содержит `correlationId`, уровень, сообщение и дополнительные поля. Логи выводятся в `stdout` в формате JSON.
 - **Метрики**: доступны через `GET /metrics`.
 - **Health probes**: liveness (жив) и readiness (готовность с учётом деградации). Критическая деградация наступает при количестве компенсаций > 3 (настраивается в `config.js`).
-- **Компенсация**: при сбое на `ВыдатьДоступ` вызывается `executeCompensation()`, которая логируется и увеличивает счётчик.
+- **Компенсация**: при сбое на `grant_access` вызывается `executeCompensation()`, которая логируется и увеличивает счётчик.
 
 ## Структура проекта
 
@@ -167,7 +170,8 @@ Frames4/
 │   ├── event.js, state.js, health.js, metrics.js, admin.js
 └── utils/
     ├── delay.js             # симуляция задержки шага
-    └── correlation.js       # генерация UUID
+    ├── correlation.js       # генерация UUID
+    └── eventType.js         # нормализация eventType (EN + опционально RU UTF-8)
 ```
 
 ## Настройка
@@ -184,30 +188,60 @@ module.exports = {
 
 ## Пример использования (curl)
 
+Отдельные `processId` для разных сценариев, чтобы не мешать уже пройденным шагам в памяти сервера.
+
+### Успешный сценарий до `complete` (ожидается `Завершён`)
+
 ```bash
 # 1. Принять заявку
 curl -X POST http://localhost:3000/api/event \
   -H "Content-Type: application/json" \
-  -d '{"processId":"meet-1","eventType":"ПринятьЗаявку","idempotencyKey":"id-1"}'
+  -d '{"processId":"meet-happy","eventType":"accept_request","idempotencyKey":"h1"}'
 
 # 2. Забронировать
 curl -X POST http://localhost:3000/api/event \
   -H "Content-Type: application/json" \
-  -d '{"processId":"meet-1","eventType":"Забронировать","idempotencyKey":"id-2"}'
+  -d '{"processId":"meet-happy","eventType":"book","idempotencyKey":"h2"}'
 
-# 3. Сбой при выдаче доступа (компенсация)
+# 3. Выдать доступ (без сбоя — не передавать simulateFailure)
 curl -X POST http://localhost:3000/api/event \
   -H "Content-Type: application/json" \
-  -d '{"processId":"meet-1","eventType":"ВыдатьДоступ","idempotencyKey":"id-3","simulateFailure":true}'
+  -d '{"processId":"meet-happy","eventType":"grant_access","idempotencyKey":"h3"}'
 
-# 4. Проверить состояние
-curl http://localhost:3000/api/state/meet-1
+# 4. Завершить — в ответе поле state должно стать «Завершён»
+curl -X POST http://localhost:3000/api/event \
+  -H "Content-Type: application/json" \
+  -d '{"processId":"meet-happy","eventType":"complete","idempotencyKey":"h4"}'
 
-# 5. Посмотреть метрики
+# 5. Проверить состояние (должно совпадать с ответом шага 4)
+curl http://localhost:3000/api/state/meet-happy
+```
+
+### Сценарий с компенсацией (другой процесс)
+
+```bash
+# 1–2 как выше, затем сбой на grant_access
+curl -X POST http://localhost:3000/api/event \
+  -H "Content-Type: application/json" \
+  -d '{"processId":"meet-fail","eventType":"accept_request","idempotencyKey":"f1"}'
+
+curl -X POST http://localhost:3000/api/event \
+  -H "Content-Type: application/json" \
+  -d '{"processId":"meet-fail","eventType":"book","idempotencyKey":"f2"}'
+
+curl -X POST http://localhost:3000/api/event \
+  -H "Content-Type: application/json" \
+  -d '{"processId":"meet-fail","eventType":"grant_access","idempotencyKey":"f3","simulateFailure":true}'
+
+curl http://localhost:3000/api/state/meet-fail
+```
+
+### Метрики
+
+```bash
 curl http://localhost:3000/metrics
 ```
 
 ---
 
 **Разработано в учебных целях.** Полностью соответствует требованиям: машина состояний (4+ шагов), идемпотентность, компенсация, наблюдаемость, health checks, метрики (счётчики + латентность).
-```
